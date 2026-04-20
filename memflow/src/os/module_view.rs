@@ -25,19 +25,19 @@ impl<T> ModuleView<T> {
     }
 }
 
-impl<T: Process> ModuleView<T> {
+impl<'a, P: Process + ?Sized> ModuleView<&'a mut P> {
     #[inline]
-    pub fn process(&self) -> &T {
+    pub fn process(&self) -> &P {
         &self.process
     }
 
     #[inline]
-    pub fn process_mut(&mut self) -> &mut T {
+    pub fn process_mut(&mut self) -> &mut P {
         &mut self.process
     }
 
     #[inline]
-    pub fn into_process(self) -> T {
+    pub fn into_process(self) -> &'a mut P {
         self.process
     }
 
@@ -59,7 +59,7 @@ impl<T: Process> ModuleView<T> {
     }
 
     pub fn module_list_callback(&mut self, mut callback: ModuleInfoCallback) -> Result<()> {
-        let sptr = &mut self.process as *mut T;
+        let sptr = self.process as *mut P;
         let target_arch = self.effective_target_arch();
         let inner_callback = &mut |ModuleAddressInfo { address, arch }| match unsafe { &mut *sptr }
             .module_by_address(address, arch)
