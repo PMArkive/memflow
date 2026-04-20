@@ -135,6 +135,7 @@ pub trait Process: Send {
     /// # Arguments
     /// * `name` - name of the module to find
     /// * `architecture` - architecture of the module. Should be either `ProcessInfo::proc_arch`, or `ProcessInfo::sys_arch`, or None for both.
+    #[deprecated(note = "use module_view(...).module_by_name(...) instead")]
     fn module_by_name_arch(
         &mut self,
         name: &str,
@@ -160,6 +161,7 @@ pub trait Process: Send {
     /// # Arguments
     /// * `name` - name of the module to find (case-insensitive)
     /// * `architecture` - architecture of the module. Should be either `ProcessInfo::proc_arch`, or `ProcessInfo::sys_arch`, or None for both.
+    #[deprecated(note = "use module_view(...).module_by_name_ignore_ascii_case(...) instead")]
     #[skip_func]
     fn module_by_name_arch_ignore_ascii_case(
         &mut self,
@@ -185,6 +187,8 @@ pub trait Process: Send {
     ///
     /// # Arguments
     /// * `name` - name of the module to find
+    #[deprecated(note = "use module_view(...).module_by_name(...) instead")]
+    #[allow(deprecated)]
     fn module_by_name(&mut self, name: &str) -> Result<ModuleInfo> {
         self.module_by_name_arch(name, None)
     }
@@ -195,7 +199,9 @@ pub trait Process: Send {
     ///
     /// # Arguments
     /// * `name` - name of the module to find (case-insensitive)
+    #[deprecated(note = "use module_view(...).module_by_name_ignore_ascii_case(...) instead")]
     #[skip_func]
+    #[allow(deprecated)]
     fn module_by_name_ignore_ascii_case(&mut self, name: &str) -> Result<ModuleInfo> {
         self.module_by_name_arch_ignore_ascii_case(name, None)
     }
@@ -206,6 +212,7 @@ pub trait Process: Send {
     /// * `target_arch` - sets which architecture to retrieve the modules for (if emulated). Choose
     /// between `Some(ProcessInfo::sys_arch())`, and `Some(ProcessInfo::proc_arch())`. `None` for all.
     #[skip_func]
+    #[deprecated(note = "use module_view(...).module_list() instead")]
     fn module_list_arch(
         &mut self,
         target_arch: Option<&ArchitectureIdent>,
@@ -219,21 +226,61 @@ pub trait Process: Send {
     ///
     /// This is equivalent to `Process::module_list_arch(None)`
     #[skip_func]
+    #[deprecated(note = "use module_view(...).module_list() instead")]
+    #[allow(deprecated)]
     fn module_list(&mut self) -> Result<Vec<ModuleInfo>> {
         self.module_list_arch(None)
+    }
+
+    /// Retrieves address of the primary module structure of the process for a given architecture.
+    ///
+    /// # Arguments
+    /// * `target_arch` - architecture to retrieve the primary module for. `None` resolves to
+    ///   `ProcessInfo::proc_arch`.
+    fn primary_module_address_arch(
+        &mut self,
+        target_arch: Option<&ArchitectureIdent>,
+    ) -> Result<Address> {
+        let target_arch = target_arch.copied().unwrap_or(self.info().proc_arch);
+        let mut ret = Err(Error(ErrorOrigin::OsLayer, ErrorKind::ModuleNotFound));
+        let callback = &mut |moduleinfo: ModuleAddressInfo| {
+            ret = Ok(moduleinfo.address);
+            false
+        };
+        self.module_address_list_callback(Some(&target_arch), callback.into())?;
+        ret
+    }
+
+    /// Retrieves information for the primary module of the process for a given architecture.
+    ///
+    /// # Arguments
+    /// * `target_arch` - architecture to retrieve the primary module for. `None` resolves to
+    ///   `ProcessInfo::proc_arch`.
+    fn primary_module_arch(
+        &mut self,
+        target_arch: Option<&ArchitectureIdent>,
+    ) -> Result<ModuleInfo> {
+        let target_arch = target_arch.copied().unwrap_or(self.info().proc_arch);
+        let addr = self.primary_module_address_arch(Some(&target_arch))?;
+        self.module_by_address(addr, target_arch)
     }
 
     /// Retrieves address of the primary module structure of the process
     ///
     /// This will generally be for the initial executable that was run
-    fn primary_module_address(&mut self) -> Result<Address>;
+    #[deprecated(note = "use module_view(...).primary_module_address() instead")]
+    #[inline]
+    fn primary_module_address(&mut self) -> Result<Address> {
+        self.primary_module_address_arch(None)
+    }
 
     /// Retrieves information for the primary module of the process
     ///
     /// This will generally be the initial executable that was run
+    #[deprecated(note = "use module_view(...).primary_module() instead")]
+    #[inline]
     fn primary_module(&mut self) -> Result<ModuleInfo> {
-        let addr = self.primary_module_address()?;
-        self.module_by_address(addr, self.info().proc_arch)
+        self.primary_module_arch(None)
     }
 
     /// Retrieves a list of all imports of a given module
