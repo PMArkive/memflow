@@ -856,6 +856,25 @@ mod tests {
         assert_eq!(map.real_size(), 0x4000);
     }
 
+    #[test]
+    #[should_panic(expected = "MemoryMap::push range overflow")]
+    fn test_push_panics_on_range_overflow() {
+        let mut map = MemoryMap::new();
+        map.push(Address::from(!0u64), (Address::null(), 2_u64));
+    }
+
+    #[test]
+    #[should_panic(expected = "MemoryMap::push existing range overflow")]
+    fn test_push_panics_on_existing_range_overflow() {
+        let mut map = MemoryMap {
+            mappings: vec![MemoryMapping {
+                base: Address::from(!0u64),
+                output: std::cell::RefCell::new((Address::null(), 2_u64)),
+            }],
+        };
+        map.push(Address::null(), (Address::null(), 1_u64));
+    }
+
     #[cfg(feature = "memmapfiles")]
     #[test]
     fn test_load_toml() {
