@@ -47,7 +47,13 @@ impl<'a> MmapInfo<'a> {
                 ));
             }
 
-            let output_end = std::cmp::min(output_base_umem + size, buf_len);
+            let output_end = std::cmp::min(
+                output_base_umem.checked_add(size).ok_or(Error(
+                    ErrorOrigin::Connector,
+                    ErrorKind::MemoryMapOutOfRange,
+                ))?,
+                buf_len,
+            );
 
             new_map.push(base, unsafe {
                 std::slice::from_raw_parts(
@@ -175,5 +181,16 @@ mod tests {
 
         let result = MmapInfoMut::try_with_bufmap_mut(buf, map);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_overflowing_output_range_in_bufmap() {
+        let buf = MmapMut::map_anon(0x1000).unwrap().make_read_only().unwrap();
+        let mut map = MemoryMap::new();
+
+        map.push(0x1000.into(), (Address::from(!0u64), 0x100));
+
+        let result = MmapInfo::try_with_bufmap(buf, map);
+        assert!(result.is_err());
     }
 }
