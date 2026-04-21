@@ -40,7 +40,7 @@ pub struct PageCache<'a, T> {
     marker: PhantomData<&'a mut [u8]>,
 }
 
-unsafe impl<'a, T> Send for PageCache<'a, T> {}
+unsafe impl<'a, T: Send> Send for PageCache<'a, T> {}
 
 #[allow(clippy::needless_option_as_deref)]
 impl<'a, T: CacheValidator> PageCache<'a, T> {
@@ -369,6 +369,9 @@ where
             std::ptr::copy_nonoverlapping(self.cache_ptr, cache_ptr, cache_entries * page_size);
         };
 
+        // TODO: Preserve cache metadata in clone (address/address_once_validated) once
+        // clone semantics are explicitly defined. For now this intentionally keeps clone
+        // behavior as a cold metadata copy to avoid changing existing behavior.
         Self {
             address: vec![Address::INVALID; cache_entries].into_boxed_slice(),
             slot_checked_out: vec![false; cache_entries].into_boxed_slice(),
