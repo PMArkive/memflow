@@ -94,6 +94,7 @@ impl<'a> MmapInfoMut<'a> {
 
     pub fn try_with_bufmap_mut(mut buf: MmapMut, map: MemoryMap<(Address, umem)>) -> Result<Self> {
         let mut new_map = MemoryMap::new();
+        let mut output_ranges: Vec<(umem, umem)> = Vec::new();
 
         let buf_len = buf.as_ref().len() as umem;
         let buf_ptr = buf.as_mut().as_mut_ptr();
@@ -107,7 +108,25 @@ impl<'a> MmapInfoMut<'a> {
                 ));
             }
 
-            let output_end = std::cmp::min(output_base_umem + size, buf_len);
+            let output_end = std::cmp::min(
+                output_base_umem.checked_add(size).ok_or(Error(
+                    ErrorOrigin::Connector,
+                    ErrorKind::MemoryMapOutOfRange,
+                ))?,
+                buf_len,
+            );
+
+            if output_ranges
+                .iter()
+                .any(|(start, end)| output_base_umem < *end && *start < output_end)
+            {
+                return Err(Error(
+                    ErrorOrigin::Connector,
+                    ErrorKind::MemoryMapOutOfRange,
+                ));
+            }
+
+            output_ranges.push((output_base_umem, output_end));
 
             new_map.push(base, unsafe {
                 std::slice::from_raw_parts_mut(
@@ -129,3 +148,32 @@ impl<'a> MmapInfoMut<'a> {
 }
 
 pub type WriteMappedFilePhysicalMemory<'a> = MappedPhysicalMemory<&'a mut [u8], MmapInfoMut<'a>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_overlapping_output_ranges_in_bufmap_mut() {
+        let buf = MmapMut::map_anon(0x1000).unwrap();
+        let mut map = MemoryMap::new();
+
+        map.push(0x1000.into(), (0x100.into(), 0x100));
+        map.push(0x2000.into(), (0x180.into(), 0x100));
+
+        let result = MmapInfoMut::try_with_bufmap_mut(buf, map);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_disjoint_output_ranges_in_bufmap_mut() {
+        let buf = MmapMut::map_anon(0x1000).unwrap();
+        let mut map = MemoryMap::new();
+
+        map.push(0x1000.into(), (0x100.into(), 0x100));
+        map.push(0x2000.into(), (0x300.into(), 0x100));
+
+        let result = MmapInfoMut::try_with_bufmap_mut(buf, map);
+        assert!(result.is_ok());
+    }
+}
