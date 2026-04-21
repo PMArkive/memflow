@@ -150,10 +150,11 @@ impl<'a, T: PhysicalMemory, Q: CacheValidator> PhysicalMemory for CachedPhysical
         let inp = inp.map(move |CTup3(addr, meta_addr, data)| {
             if cache.is_cached_page_type(addr.page_type()) {
                 for (paddr, data_chunk) in data.page_chunks(addr.address(), cache.page_size()) {
-                    let mut cached_page = cache.cached_page_mut(paddr, false);
-                    if let PageValidity::Valid(buf) = &mut cached_page.validity {
+                    let cached_page = cache.cached_page_mut(paddr, false);
+                    if let PageValidity::Valid(buf) = cached_page.validity {
                         // write-back into still valid cache pages
                         let start = (paddr - cached_page.address) as usize;
+                        let buf = unsafe { std::slice::from_raw_parts_mut(buf, cache.page_size()) };
                         buf[start..(start + data_chunk.len())].copy_from_slice(data_chunk.into());
                     }
 

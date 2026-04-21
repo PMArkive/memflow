@@ -6,36 +6,38 @@ use crate::mem::phys_mem::*;
 use crate::types::{cache::CacheValidator, umem, Address, PageType, PhysicalAddress};
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
+use std::marker::PhantomData;
 
 use bumpalo::{collections::Vec as BumpVec, Bump};
 
-pub enum PageValidity<'a> {
+pub enum PageValidity {
     Invalid,
-    Validatable(&'a mut [u8]),
+    Validatable(*mut u8),
     ToBeValidated,
-    Valid(&'a mut [u8]),
+    Valid(*mut u8),
 }
 
-pub struct CacheEntry<'a> {
+pub struct CacheEntry {
     pub address: Address,
-    pub validity: PageValidity<'a>,
+    pub validity: PageValidity,
 }
 
-impl<'a> CacheEntry<'a> {
-    pub fn with(address: Address, validity: PageValidity<'a>) -> Self {
+impl CacheEntry {
+    pub fn with(address: Address, validity: PageValidity) -> Self {
         Self { address, validity }
     }
 }
 
 pub struct PageCache<'a, T> {
     address: Box<[Address]>,
-    page_refs: Box<[Option<&'a mut [u8]>]>,
+    slot_checked_out: Box<[bool]>,
     address_once_validated: Box<[Address]>,
     page_size: usize,
     page_type_mask: PageType,
     pub validator: T,
     cache_ptr: *mut u8,
     cache_layout: Layout,
+    marker: PhantomData<&'a mut [u8]>,
 }
 
 unsafe impl<'a, T> Send for PageCache<'a, T> {}
@@ -58,27 +60,18 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
 
         let cache_ptr = unsafe { alloc_zeroed(layout) };
 
-        let page_refs = (0..cache_entries)
-            .map(|i| unsafe {
-                std::mem::transmute(std::slice::from_raw_parts_mut(
-                    cache_ptr.add(i * page_size),
-                    page_size,
-                ))
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-
         validator.allocate_slots(cache_entries);
 
         Self {
             address: vec![Address::INVALID; cache_entries].into_boxed_slice(),
-            page_refs,
+            slot_checked_out: vec![false; cache_entries].into_boxed_slice(),
             address_once_validated: vec![Address::INVALID; cache_entries].into_boxed_slice(),
             page_size,
             page_type_mask,
             validator,
             cache_ptr,
             cache_layout: layout,
+            marker: PhantomData,
         }
     }
 
@@ -87,35 +80,57 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
             % (self.address.len() as umem)) as usize
     }
 
-    fn take_page(&mut self, addr: Address, skip_validator: bool) -> PageValidity<'a> {
+    fn page_ptr(&mut self, page_index: usize) -> *mut u8 {
+        let start = page_index * self.page_size;
+        unsafe { self.cache_ptr.add(start) }
+    }
+
+    fn take_page(&mut self, addr: Address, skip_validator: bool) -> PageValidity {
         let page_index = self.page_index(addr);
+        let aligned_addr = addr.as_page_aligned(self.page_size);
 
-        let bufopt = self.page_refs[page_index].take();
-
-        if let Some(buf) = bufopt {
-            if self.address[page_index] == addr.as_page_aligned(self.page_size)
-                && (skip_validator || self.validator.is_slot_valid(page_index))
-            {
-                PageValidity::Valid(buf)
-            } else if self.address_once_validated[page_index]
-                == addr.as_page_aligned(self.page_size)
-                || self.address_once_validated[page_index] == Address::INVALID
-            {
-                PageValidity::Validatable(buf)
+        if self.slot_checked_out[page_index] {
+            return if self.address_once_validated[page_index] == aligned_addr {
+                PageValidity::ToBeValidated
             } else {
                 PageValidity::Invalid
+            };
+        }
+
+        let is_valid = self.address[page_index] == aligned_addr
+            && (skip_validator || self.validator.is_slot_valid(page_index));
+        let is_validatable = self.address_once_validated[page_index] == aligned_addr
+            || self.address_once_validated[page_index] == Address::INVALID;
+
+        if is_valid || is_validatable {
+            self.slot_checked_out[page_index] = true;
+            let buf = self.page_ptr(page_index);
+            if is_valid {
+                PageValidity::Valid(buf)
+            } else {
+                PageValidity::Validatable(buf)
             }
-        } else if self.address_once_validated[page_index] == addr.as_page_aligned(self.page_size) {
-            PageValidity::ToBeValidated
         } else {
             PageValidity::Invalid
         }
     }
 
-    fn put_page(&mut self, addr: Address, page: &'a mut [u8]) {
+    fn put_page(&mut self, addr: Address) {
         let page_index = self.page_index(addr);
-        debug_assert!(self.page_refs[page_index].is_none());
-        self.page_refs[page_index] = Some(page);
+        let aligned_addr = addr.as_page_aligned(self.page_size);
+
+        debug_assert!(
+            self.slot_checked_out[page_index],
+            "page slot must be checked out before being returned"
+        );
+        debug_assert!(
+            self.address[page_index] == aligned_addr
+                || self.address[page_index] == Address::INVALID
+                || self.address_once_validated[page_index] == aligned_addr,
+            "returned page must match active slot address"
+        );
+
+        self.slot_checked_out[page_index] = false;
     }
 
     pub fn page_size(&self) -> usize {
@@ -126,7 +141,7 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
         self.page_type_mask.contains(page_type)
     }
 
-    pub fn cached_page_mut(&mut self, addr: Address, skip_validator: bool) -> CacheEntry<'a> {
+    pub fn cached_page_mut(&mut self, addr: Address, skip_validator: bool) -> CacheEntry {
         let page_size = self.page_size;
         let aligned_addr = addr.as_page_aligned(page_size);
         CacheEntry {
@@ -135,11 +150,9 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
         }
     }
 
-    pub fn put_entry(&mut self, entry: CacheEntry<'a>) {
+    pub fn put_entry(&mut self, entry: CacheEntry) {
         match entry.validity {
-            PageValidity::Valid(buf) | PageValidity::Validatable(buf) => {
-                self.put_page(entry.address, buf)
-            }
+            PageValidity::Valid(_) | PageValidity::Validatable(_) => self.put_page(entry.address),
             _ => {}
         }
     }
@@ -150,22 +163,22 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
         self.address_once_validated[idx] = aligned_addr;
     }
 
-    pub fn cancel_page_validation(&mut self, addr: Address, page_buf: &'a mut [u8]) {
+    pub fn cancel_page_validation(&mut self, addr: Address) {
         let idx = self.page_index(addr);
         // We could leave it in previous validity state,
         // but the buffer could have been partially written...
         if self.address_once_validated[idx] == addr {
             self.invalidate_page_raw(addr);
-            self.put_page(addr, page_buf);
+            self.put_page(addr);
         }
     }
 
-    pub fn validate_page(&mut self, addr: Address, page_buf: &'a mut [u8]) {
+    pub fn validate_page(&mut self, addr: Address) {
         let idx = self.page_index(addr);
         self.address[idx] = addr;
         self.address_once_validated[idx] = Address::INVALID;
         self.validator.validate_slot(idx);
-        self.put_page(addr, page_buf);
+        self.put_page(addr);
     }
 
     pub fn invalidate_page_raw(&mut self, addr: Address) {
@@ -213,66 +226,90 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
             let mut next = iter.next();
             let mut clist = BumpVec::new_in(arena);
             let mut wlist = BumpVec::new_in(arena);
-            let mut wlistcache = BumpVec::new_in(arena);
 
             while let Some(CTup3(addr, meta_addr, out)) = next {
                 if self.is_cached_page_type(addr.page_type()) {
-                    (meta_addr, out)
-                        .page_chunks(addr.address(), page_size)
-                        .for_each(|(paddr, (meta_addr, chunk))| {
-                            let mut prd = CTup3(
-                                PhysicalAddress::with_page(
-                                    paddr,
-                                    addr.page_type(),
-                                    addr.page_size() as umem,
-                                ),
-                                meta_addr,
-                                chunk,
-                            );
+                    for (paddr, (meta_addr, chunk)) in
+                        (meta_addr, out).page_chunks(addr.address(), page_size)
+                    {
+                        let mut prd = CTup3(
+                            PhysicalAddress::with_page(
+                                paddr,
+                                addr.page_type(),
+                                addr.page_size() as umem,
+                            ),
+                            meta_addr,
+                            chunk,
+                        );
 
-                            let cached_page = self.cached_page_mut(prd.0.address(), false);
+                        let cached_page = self.cached_page_mut(prd.0.address(), false);
 
-                            match cached_page.validity {
-                                PageValidity::Valid(buf) => {
-                                    let aligned_addr = paddr.as_page_aligned(self.page_size);
-                                    let start = paddr - aligned_addr;
-                                    let cached_buf = buf
+                        match cached_page.validity {
+                            PageValidity::Valid(buf) => {
+                                let aligned_addr = paddr.as_page_aligned(self.page_size);
+                                let start = paddr - aligned_addr;
+                                let cached_buf =
+                                    unsafe { std::slice::from_raw_parts_mut(buf, self.page_size) }
                                         .split_at_mut(start as usize)
                                         .1
                                         .split_at_mut(prd.2.len())
                                         .0;
-                                    prd.2.copy_from_slice(cached_buf);
-                                    opt_call(cb_out.as_deref_mut(), CTup2(prd.1, prd.2));
-                                    self.put_page(cached_page.address, buf);
-                                }
-                                PageValidity::Validatable(buf) => {
-                                    clist.push(prd);
-                                    wlistcache.push(CTup3(
-                                        PhysicalAddress::from(cached_page.address),
-                                        meta_addr,
-                                        buf.into(),
-                                    ));
-                                    self.mark_page_for_validation(cached_page.address);
-                                }
-                                PageValidity::ToBeValidated => {
-                                    clist.push(prd);
-                                }
-                                PageValidity::Invalid => {
-                                    wlist.push(prd);
-                                }
+                                prd.2.copy_from_slice(cached_buf);
+                                opt_call(cb_out.as_deref_mut(), CTup2(prd.1, prd.2));
+                                self.put_page(cached_page.address);
                             }
-                        });
+                            PageValidity::Validatable(buf) => {
+                                self.mark_page_for_validation(cached_page.address);
+
+                                let page_buf =
+                                    unsafe { std::slice::from_raw_parts_mut(buf, self.page_size) };
+                                let mut read_iter = core::iter::once(CTup3(
+                                    PhysicalAddress::from(cached_page.address),
+                                    cached_page.address,
+                                    page_buf.as_mut().into(),
+                                ));
+
+                                let callback = &mut |CTup2(addr, _buf): ReadData<'_>| {
+                                    self.validate_page(addr);
+                                    true
+                                };
+
+                                let mut callback = callback.into();
+
+                                let read_result = mem.phys_read_raw_iter(MemOps {
+                                    inp: (&mut read_iter).into(),
+                                    out: Some(&mut callback),
+                                    out_fail: None,
+                                });
+
+                                self.cancel_page_validation(cached_page.address);
+                                read_result?;
+
+                                let aligned_addr = paddr.as_page_aligned(self.page_size);
+                                let start = paddr - aligned_addr;
+                                let cached_buf = page_buf
+                                    .split_at_mut(start as usize)
+                                    .1
+                                    .split_at_mut(prd.2.len())
+                                    .0;
+                                prd.2.copy_from_slice(cached_buf);
+                                opt_call(cb_out.as_deref_mut(), CTup2(prd.1, prd.2));
+                            }
+                            PageValidity::ToBeValidated => {
+                                clist.push(prd);
+                            }
+                            PageValidity::Invalid => {
+                                wlist.push(prd);
+                            }
+                        }
+                    }
                 } else {
                     wlist.push(CTup3(addr, meta_addr, out));
                 }
 
                 next = iter.next();
 
-                if next.is_none()
-                    || wlist.len() >= 64
-                    || wlistcache.len() >= 64
-                    || clist.len() >= 64
-                {
+                if next.is_none() || wlist.len() >= 64 || clist.len() >= 64 {
                     if !wlist.is_empty() {
                         {
                             let mut drain = wlist.drain(..);
@@ -285,33 +322,6 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
                         wlist.clear();
                     }
 
-                    if !wlistcache.is_empty() {
-                        let mut iter = wlistcache.iter_mut().map(
-                            |CTup3(addr, _, buf): &mut PhysicalReadData| {
-                                CTup3(*addr, addr.address(), buf.into())
-                            },
-                        );
-
-                        let callback = &mut |CTup2(addr, buf): ReadData<'a>| {
-                            self.validate_page(addr, buf.into());
-                            true
-                        };
-
-                        let mut callback = callback.into();
-
-                        mem.phys_read_raw_iter(MemOps {
-                            inp: (&mut iter).into(),
-                            out: Some(&mut callback),
-                            out_fail: None,
-                        })?;
-
-                        wlistcache.into_iter().for_each(|CTup3(addr, _, buf)| {
-                            self.cancel_page_validation(addr.address(), buf.into());
-                        });
-
-                        wlistcache = BumpVec::new_in(arena);
-                    }
-
                     while let Some(CTup3(addr, meta_addr, mut out)) = clist.pop() {
                         let cached_page = self.cached_page_mut(addr.address(), false);
                         let aligned_addr = cached_page.address.as_page_aligned(self.page_size);
@@ -320,9 +330,13 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
 
                         if let PageValidity::Valid(buf) = cached_page.validity {
                             let cached_buf =
-                                buf.split_at_mut(start as usize).1.split_at_mut(out.len()).0;
+                                unsafe { std::slice::from_raw_parts_mut(buf, self.page_size) }
+                                    .split_at_mut(start as usize)
+                                    .1
+                                    .split_at_mut(out.len())
+                                    .0;
                             out.copy_from_slice(cached_buf);
-                            self.put_page(cached_page.address, buf);
+                            self.put_page(cached_page.address);
                             opt_call(cb_out.as_deref_mut(), CTup2(meta_addr, out));
                         } else {
                             opt_call(cb_fail.as_deref_mut(), CTup2(meta_addr, out));
@@ -355,25 +369,16 @@ where
             std::ptr::copy_nonoverlapping(self.cache_ptr, cache_ptr, cache_entries * page_size);
         };
 
-        let page_refs = (0..cache_entries)
-            .map(|i| unsafe {
-                std::mem::transmute(std::slice::from_raw_parts_mut(
-                    cache_ptr.add(i * page_size),
-                    page_size,
-                ))
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-
         Self {
             address: vec![Address::INVALID; cache_entries].into_boxed_slice(),
-            page_refs,
+            slot_checked_out: vec![false; cache_entries].into_boxed_slice(),
             address_once_validated: vec![Address::INVALID; cache_entries].into_boxed_slice(),
             page_size,
             page_type_mask,
             validator,
             cache_ptr,
             cache_layout: layout,
+            marker: PhantomData,
         }
     }
 }
