@@ -176,8 +176,8 @@ pub trait VirtualTranslate: Send {
         out: VirtualTranslationCallback,
     ) {
         assert!(end >= start);
-        // TODO: mark this branch as unlikely once the available std hint supports it.
         if end == start {
+            crate::cold_path();
             return;
         }
         self.virt_to_phys_list(
@@ -837,6 +837,7 @@ where
             "virt_to_phys_iter must invoke either success or failure callback"
         );
         output.map(Ok).unwrap_or_else(|| {
+            crate::cold_path();
             Err(output_err.unwrap_or(Error(ErrorOrigin::VirtualTranslate, ErrorKind::NotFound)))
         })
     }
@@ -941,6 +942,7 @@ pub trait VirtualTranslate3: Clone + Copy + Send {
             "virt_to_phys_iter must invoke either success or failure callback"
         );
         output.map(Ok).unwrap_or_else(|| {
+            crate::cold_path();
             Err(output_err.unwrap_or(Error(ErrorOrigin::VirtualTranslate, ErrorKind::NotFound)))
         })
     }

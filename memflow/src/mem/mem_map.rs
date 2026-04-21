@@ -503,6 +503,7 @@ impl<
                 }
             }
 
+            crate::cold_path();
             let _ = opt_call(self.fail_out.as_deref_mut(), CTup2(meta_addr, buf));
         }
         None
