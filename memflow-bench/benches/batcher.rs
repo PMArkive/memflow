@@ -2,6 +2,7 @@ use criterion::*;
 
 use memflow::prelude::v1::*;
 
+use std::cell::RefCell;
 use std::convert::TryInto;
 
 //use memflow::dummy::DummyMemory as Memory;
@@ -41,7 +42,9 @@ use rand::prelude::*;
 use rand::{Rng, SeedableRng};
 use rand_xorshift::XorShiftRng as CurRng;
 
-static mut TSLICE: [[u8; 16]; 0x10000] = [[0; 16]; 0x10000];
+thread_local! {
+    static SCRATCH: RefCell<Vec<[u8; 16]>> = RefCell::new(vec![[0u8; 16]; 0x10000]);
+}
 
 fn read_test_nobatcher<T: MemoryView>(
     chunk_size: usize,
@@ -68,14 +71,18 @@ fn read_test_nobatcher<T: MemoryView>(
 fn read_test_batcher<T: MemoryView>(chunk_size: usize, mem: &mut T, mut rng: CurRng, size: umem) {
     let base_addr = Address::from(rng.gen_range(0..size));
 
-    let mut batcher = mem.batcher();
-    batcher.reserve(chunk_size);
+    SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
 
-    for i in unsafe { TSLICE.iter_mut().take(chunk_size) } {
-        batcher.read_into(base_addr + rng.gen_range(0usize..0x2000), i);
-    }
+        let mut batcher = mem.batcher();
+        batcher.reserve(chunk_size);
 
-    let _ = black_box(batcher.commit_rw());
+        for i in scratch.iter_mut().take(chunk_size) {
+            batcher.read_into(base_addr + rng.gen_range(0usize..0x2000), i);
+        }
+
+        let _ = black_box(batcher.commit_rw());
+    });
 }
 
 fn read_test_with_ctx<T: MemoryView>(
@@ -88,17 +95,13 @@ fn read_test_with_ctx<T: MemoryView>(
 
     let mem_size = mem::mb(64);
 
+    let mut tslice = vec![[0u8; 16]; chunk_size];
     let mut tbuf = vec![];
 
     tbuf.extend(
-        unsafe { TSLICE }
+        tslice
             .iter_mut()
-            .map(|arr| {
-                CTup3(Address::INVALID, Address::INVALID, unsafe {
-                    std::mem::transmute::<&mut [u8], CSliceMut<'_, u8>>(&mut arr[..])
-                })
-            })
-            .take(chunk_size),
+            .map(|arr| CTup3(Address::INVALID, Address::INVALID, (&mut arr[..]).into())),
     );
 
     if !use_batcher {

@@ -207,7 +207,7 @@ impl<T: CacheValidator> PageCache<T> {
     }
 
     // TODO: do this properly
-    pub fn cached_read<'b, F: PhysicalMemory>(
+    pub fn cached_read<F: PhysicalMemory>(
         &mut self,
         mem: &mut F,
         MemOps {
@@ -215,7 +215,7 @@ impl<T: CacheValidator> PageCache<T> {
             out: mut cb_out,
             out_fail: mut cb_fail,
         }: PhysicalReadMemOps,
-        arena: &'b Bump,
+        arena: &Bump,
     ) -> Result<()> {
         let page_size = self.page_size;
 
