@@ -51,13 +51,13 @@ use bumpalo::Bump;
 ///
 /// Since this cache implements [`PhysicalMemory`] it can be used as a replacement
 /// in all structs and functions that require a [`PhysicalMemory`] object.
-pub struct CachedPhysicalMemory<'a, T, Q> {
+pub struct CachedPhysicalMemory<T, Q> {
     mem: T,
-    cache: PageCache<'a, Q>,
+    cache: PageCache<Q>,
     arena: Bump,
 }
 
-impl<'a, T, Q> Clone for CachedPhysicalMemory<'a, T, Q>
+impl<T, Q> Clone for CachedPhysicalMemory<T, Q>
 where
     T: Clone,
     Q: CacheValidator + Clone,
@@ -71,14 +71,14 @@ where
     }
 }
 
-impl<'a, T: PhysicalMemory, Q: CacheValidator> CachedPhysicalMemory<'a, T, Q> {
+impl<T: PhysicalMemory, Q: CacheValidator> CachedPhysicalMemory<T, Q> {
     /// Constructs a new cache based on the given `PageCache`.
     ///
     /// This function is used when manually constructing a cache inside of the memflow crate itself.
     ///
     /// For general usage it is advised to just use the [builder](struct.CachedPhysicalMemoryBuilder.html)
     /// to construct the cache.
-    pub fn new(mem: T, cache: PageCache<'a, Q>) -> Self {
+    pub fn new(mem: T, cache: PageCache<Q>) -> Self {
         Self {
             mem,
             cache,
@@ -122,7 +122,7 @@ impl<'a, T: PhysicalMemory, Q: CacheValidator> CachedPhysicalMemory<'a, T, Q> {
     }
 }
 
-impl<'a, T: PhysicalMemory> CachedPhysicalMemory<'a, T, DefaultCacheValidator> {
+impl<T: PhysicalMemory> CachedPhysicalMemory<T, DefaultCacheValidator> {
     /// Returns a new builder for this cache with default settings.
     pub fn builder(mem: T) -> CachedPhysicalMemoryBuilder<T, DefaultCacheValidator> {
         CachedPhysicalMemoryBuilder::new(mem)
@@ -130,7 +130,7 @@ impl<'a, T: PhysicalMemory> CachedPhysicalMemory<'a, T, DefaultCacheValidator> {
 }
 
 // forward PhysicalMemory trait fncs
-impl<'a, T: PhysicalMemory, Q: CacheValidator> PhysicalMemory for CachedPhysicalMemory<'a, T, Q> {
+impl<T: PhysicalMemory, Q: CacheValidator> PhysicalMemory for CachedPhysicalMemory<T, Q> {
     fn phys_read_raw_iter(&mut self, data: PhysicalReadMemOps) -> Result<()> {
         self.cache.validator.update_validity();
         self.arena.reset();
@@ -275,7 +275,7 @@ impl<T: PhysicalMemory> CachedPhysicalMemoryBuilder<T, DefaultCacheValidator> {
 
 impl<T: PhysicalMemory, Q: CacheValidator> CachedPhysicalMemoryBuilder<T, Q> {
     /// Builds the [`CachedPhysicalMemory`] object or returns an error if the page size is not set.
-    pub fn build<'a>(self) -> Result<CachedPhysicalMemory<'a, T, Q>> {
+    pub fn build(self) -> Result<CachedPhysicalMemory<T, Q>> {
         Ok(CachedPhysicalMemory::new(
             self.mem,
             PageCache::with_page_size(
@@ -460,7 +460,7 @@ impl<T: PhysicalMemory, Q: CacheValidator> CachedPhysicalMemoryBuilder<T, Q> {
 
 #[cfg(feature = "plugins")]
 cglue::cglue_impl_group!(
-    CachedPhysicalMemory<'cglue_a, T: PhysicalMemory, Q: CacheValidator>,
+    CachedPhysicalMemory<T: PhysicalMemory, Q: CacheValidator>,
     crate::plugins::ConnectorInstance,
     {}
 );

@@ -6,7 +6,6 @@ use crate::mem::phys_mem::*;
 use crate::types::{cache::CacheValidator, umem, Address, PageType, PhysicalAddress};
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
-use std::marker::PhantomData;
 
 use bumpalo::{collections::Vec as BumpVec, Bump};
 
@@ -28,7 +27,7 @@ impl CacheEntry {
     }
 }
 
-pub struct PageCache<'a, T> {
+pub struct PageCache<T> {
     address: Box<[Address]>,
     slot_checked_out: Box<[bool]>,
     address_once_validated: Box<[Address]>,
@@ -37,13 +36,12 @@ pub struct PageCache<'a, T> {
     pub validator: T,
     cache_ptr: *mut u8,
     cache_layout: Layout,
-    marker: PhantomData<&'a mut [u8]>,
 }
 
-unsafe impl<'a, T: Send> Send for PageCache<'a, T> {}
+unsafe impl<T: Send> Send for PageCache<T> {}
 
 #[allow(clippy::needless_option_as_deref)]
-impl<'a, T: CacheValidator> PageCache<'a, T> {
+impl<T: CacheValidator> PageCache<T> {
     pub fn new(arch: ArchitectureObj, size: usize, page_type_mask: PageType, validator: T) -> Self {
         Self::with_page_size(arch.page_size(), size, page_type_mask, validator)
     }
@@ -71,7 +69,6 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
             validator,
             cache_ptr,
             cache_layout: layout,
-            marker: PhantomData,
         }
     }
 
@@ -350,7 +347,7 @@ impl<'a, T: CacheValidator> PageCache<'a, T> {
     }
 }
 
-impl<'a, T> Clone for PageCache<'a, T>
+impl<T> Clone for PageCache<T>
 where
     T: CacheValidator + Clone,
 {
@@ -381,12 +378,11 @@ where
             validator,
             cache_ptr,
             cache_layout: layout,
-            marker: PhantomData,
         }
     }
 }
 
-impl<'a, T> Drop for PageCache<'a, T> {
+impl<T> Drop for PageCache<T> {
     fn drop(&mut self) {
         unsafe {
             dealloc(self.cache_ptr, self.cache_layout);
