@@ -176,6 +176,10 @@ pub trait VirtualTranslate: Send {
         out: VirtualTranslationCallback,
     ) {
         assert!(end >= start);
+        // TODO: mark this branch as unlikely once the available std hint supports it.
+        if end == start {
+            return;
+        }
         self.virt_to_phys_list(
             &[CTup2(start, (end - start) as umem)],
             out,
