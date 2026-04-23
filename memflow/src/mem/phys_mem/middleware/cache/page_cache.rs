@@ -397,7 +397,10 @@ mod tests {
     use crate::cglue::ForwardMut;
     use crate::dummy::{DummyMemory, DummyOs};
     use crate::mem::{CachedPhysicalMemory, MemoryView, VirtualDma};
-    use crate::types::{cache::TimedCacheValidator, size, Address, PhysicalAddress};
+    use crate::types::{
+        cache::{CountCacheValidator, TimedCacheValidator},
+        size, Address, PhysicalAddress,
+    };
 
     use coarsetime::Duration;
     use rand::{thread_rng, Rng};
@@ -459,6 +462,75 @@ mod tests {
             .phys_read_into(write_addr, &mut cloned_read_buf)
             .unwrap();
         assert_eq!(cloned_read_buf, cmp_buf);
+    }
+
+    #[test]
+    fn checked_out_page_reports_to_be_validated() {
+        let mut cache = PageCache::with_page_size(
+            0x1000,
+            0x1000,
+            PageType::READ_ONLY,
+            CountCacheValidator::new(1),
+        );
+        let addr = Address::from(0x2000_u64);
+
+        let first_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(first_entry.validity, PageValidity::Validatable(_)));
+
+        cache.mark_page_for_validation(first_entry.address);
+
+        let second_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(second_entry.validity, PageValidity::ToBeValidated));
+
+        cache.put_entry(first_entry);
+    }
+
+    #[test]
+    fn validate_page_promotes_validatable_entry_to_valid() {
+        let mut cache = PageCache::with_page_size(
+            0x1000,
+            0x1000,
+            PageType::READ_ONLY,
+            CountCacheValidator::new(1),
+        );
+        let addr = Address::from(0x3000_u64);
+
+        let first_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(first_entry.validity, PageValidity::Validatable(_)));
+
+        cache.mark_page_for_validation(first_entry.address);
+        cache.validate_page(first_entry.address);
+
+        let second_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(second_entry.validity, PageValidity::Valid(_)));
+
+        cache.put_entry(second_entry);
+    }
+
+    #[test]
+    fn cancel_page_validation_releases_checked_out_slot() {
+        let mut cache = PageCache::with_page_size(
+            0x1000,
+            0x1000,
+            PageType::READ_ONLY,
+            CountCacheValidator::new(1),
+        );
+        let addr = Address::from(0x4000_u64);
+
+        let first_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(first_entry.validity, PageValidity::Validatable(_)));
+
+        cache.validator.update_validity();
+        cache.mark_page_for_validation(first_entry.address);
+        cache.cancel_page_validation(first_entry.address);
+
+        let second_entry = cache.cached_page_mut(addr, false);
+        assert!(matches!(
+            second_entry.validity,
+            PageValidity::Validatable(_)
+        ));
+
+        cache.put_entry(second_entry);
     }
 
     /// Test cached memory read both with a random seed and a predetermined one.

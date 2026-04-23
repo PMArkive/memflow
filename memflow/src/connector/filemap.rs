@@ -193,4 +193,26 @@ mod tests {
         let result = MmapInfo::try_with_bufmap(buf, map);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn rejects_overflowing_output_range_in_bufmap_mut() {
+        let buf = MmapMut::map_anon(0x1000).unwrap();
+        let mut map = MemoryMap::new();
+
+        map.push(0x1000.into(), (Address::from(!0u64), 0x100));
+
+        let result = MmapInfoMut::try_with_bufmap_mut(buf, map);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_output_range_clipped_to_buffer_end() {
+        let buf = MmapMut::map_anon(0x1000).unwrap().make_read_only().unwrap();
+        let mut map = MemoryMap::new();
+
+        map.push(0x1000.into(), (0x0f00.into(), 0x400));
+
+        let result = MmapInfo::try_with_bufmap(buf, map);
+        assert!(result.is_ok());
+    }
 }
