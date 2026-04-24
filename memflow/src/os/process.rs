@@ -2,7 +2,7 @@
 
 use super::{
     ExportCallback, ExportInfo, ImportCallback, ImportInfo, ModuleAddressInfo, ModuleInfo,
-    ModuleInfoCallback, SectionCallback, SectionInfo,
+    ModuleInfoCallback, ModuleView, SectionCallback, SectionInfo,
 };
 use crate::cglue::*;
 use crate::prelude::v1::{Result, *};
@@ -56,6 +56,20 @@ impl ProcessState {
 pub trait Process: Send {
     /// Retrieves the state of the process
     fn state(&mut self) -> ProcessState;
+
+    /// Creates a module view over this process.
+    ///
+    /// # Arguments
+    /// * `target_arch` - target architecture to query modules for. `None` resolves to
+    ///   `ProcessInfo::proc_arch`.
+    #[skip_func]
+    #[inline]
+    fn module_view(&mut self, target_arch: Option<ArchitectureIdent>) -> ModuleView<Fwd<&mut Self>>
+    where
+        Self: Sized,
+    {
+        ModuleView::new(self.forward_mut(), target_arch)
+    }
 
     /// Changes the dtb this process uses for memory translations
     ///

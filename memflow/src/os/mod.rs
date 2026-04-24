@@ -17,6 +17,7 @@
 
 pub mod keyboard;
 pub mod module;
+pub mod module_view;
 pub mod process;
 pub mod root;
 pub mod util;
@@ -27,6 +28,7 @@ pub use module::{
     ExportCallback, ExportInfo, ImportCallback, ImportInfo, ModuleAddressCallback,
     ModuleAddressInfo, ModuleInfo, ModuleInfoCallback, SectionCallback, SectionInfo,
 };
+pub use module_view::ModuleView;
 
 pub use process::{Pid, Process, ProcessInfo, ProcessInfoCallback, ProcessState};
 
